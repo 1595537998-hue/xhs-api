@@ -1,199 +1,224 @@
+// MCP over SSE Server for Vercel
+// 部署到 api/sse.js
+
 export const config = {
   runtime: 'edge',
 };
 
-// MCP 协议常量
-const JSONRPC_VERSION = '2.0';
-const PROTOCOL_VERSION = '2024-11-05';
-const SERVER_NAME = 'xhs-api';
-const SERVER_VERSION = '1.0.0';
-
-// 工具定义
-const TOOLS = [
-  {
-    name: 'xhs_get_note',
-    description: '获取小红书笔记的详细内容，包括标题、作者、正文、图片等',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: {
-          type: 'string',
-          description: '小红书笔记链接（完整的 URL）'
-        }
-      },
-      required: ['url']
-    }
-  }
-];
-
 export default async function handler(req) {
-  // CORS
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Cache-Control'
+  const url = new URL(req.url);
+  
+  // 获取当前域名
+  const baseUrl = `https://${req.headers.get('host')}`;
+  
+  // 处理 SSE 连接
+  if (req.method === 'GET' && url.pathname === '/api/sse') {
+    const encoder = new TextEncoder();
+    
+    const stream = new ReadableStream({
+      async start(controller) {
+        // 发送 endpoint 事件
+        const endpointEvent = {
+          jsonrpc: '2.0',
+          method: 'endpoint',
+          params: {
+            endpoint: `${baseUrl}/api/sse/message`
+          }
+        };
+        
+        controller.enqueue(
+          encoder.encode(`event: endpoint
+data: ${JSON.stringify(endpointEvent)}
+
+`)
+        );
+        
+        // 保持连接打开
+        const keepAlive = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(': keepalive
+
+'));
+          } catch (e) {
+            clearInterval(keepAlive);
+          }
+        }, 30000);
+        
+        // 当连接关闭时清理
+        req.signal.addEventListener('abort', () => {
+          clearInterval(keepAlive);
+          controller.close();
+        });
       }
     });
+    
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    });
   }
-
-  if (req.method !== 'GET' && req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
-      status: 405,
+  
+  // 处理客户端消息
+  if (req.method === 'POST' && url.pathname === '/api/sse/message') {
+    const message = await req.json();
+    
+    // 处理 initialize 请求
+    if (message.method === 'initialize') {
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          protocolVersion: '2024-11-05',
+          serverInfo: {
+            name: 'xhs-mcp-server',
+            version: '1.0.0'
+          },
+          capabilities: {
+            tools: {}
+          }
+        }
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // 处理 tools/list 请求
+    if (message.method === 'tools/list') {
+      return new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: message.id,
+        result: {
+          tools: [
+            {
+              name: 'xhs_get_card',
+              description: '获取小红书笔记卡片信息',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  url: {
+                    type: 'string',
+                    description: '小红书笔记链接'
+                  }
+                },
+                required: ['url']
+              }
+            },
+            {
+              name: 'xhs_get_images',
+              description: '获取小红书笔记图片',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  url: {
+                    type: 'string',
+                    description: '小红书笔记链接'
+                  }
+                },
+                required: ['url']
+              }
+            }
+          ]
+        }
+      }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // 处理 tools/call 请求
+    if (message.method === 'tools/call') {
+      const { name, arguments: args } = message.params;
+      
+      try {
+        if (name === 'xhs_get_card') {
+          // ✅ 改为 POST 请求，带 JSON body
+          const response = await fetch(`${baseUrl}/api/xhs-card`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: args.url })
+          });
+          const data = await response.json();
+          
+          return new Response(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(data, null, 2)
+                }
+              ]
+            }
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        
+        if (name === 'xhs_get_images') {
+          // ✅ 改为 POST 请求，带 JSON body
+          const response = await fetch(`${baseUrl}/api/xhs-images`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: [args.url] })  // 注意这里用 urls 数组，如果你希望只传一个url需要调整，但你的接口原设计是 urls 数组，所以按你的接口格式来
+          });
+          const data = await response.json();
+          
+          return new Response(JSON.stringify({
+            jsonrpc: '2.0',
+            id: message.id,
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(data, null, 2)
+                }
+              ]
+            }
+          }), {
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            code: -32601,
+            message: 'Tool not found'
+          }
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+      } catch (error) {
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: {
+            code: -32603,
+            message: error.message
+          }
+        }), {
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+    
+    // 未知方法
+    return new Response(JSON.stringify({
+      jsonrpc: '2.0',
+      id: message.id,
+      error: {
+        code: -32601,
+        message: 'Method not found'
+      }
+    }), {
       headers: { 'Content-Type': 'application/json' }
     });
   }
-
-  // SSE 头
-  const stream = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder();
-      
-      function send(data) {
-        const message = `data: ${JSON.stringify(data)}\n\n`;
-        controller.enqueue(encoder.encode(message));
-      }
-
-      function sendEndpoint() {
-        send({
-          jsonrpc: JSONRPC_VERSION,
-          method: 'endpoint',
-          params: { endpoint: '/api/sse' }
-        });
-      }
-
-      try {
-        // 1. 发送 endpoint
-        sendEndpoint();
-
-        // 2. 等客户端的消息（从 POST body 读）
-        if (req.method === 'POST') {
-          const body = await req.json();
-          
-          if (body.method === 'initialize') {
-            // 返回服务器能力
-            send({
-              jsonrpc: JSONRPC_VERSION,
-              id: body.id,
-              result: {
-                protocolVersion: PROTOCOL_VERSION,
-                serverInfo: {
-                  name: SERVER_NAME,
-                  version: SERVER_VERSION
-                },
-                capabilities: {
-                  tools: {}
-                }
-              }
-            });
-          } else if (body.method === 'tools/list') {
-            // 返回工具列表
-            send({
-              jsonrpc: JSONRPC_VERSION,
-              id: body.id,
-              result: { tools: TOOLS }
-            });
-          } else if (body.method === 'tools/call') {
-            // 调用工具
-            const { name, arguments: args } = body.params;
-            
-            if (name === 'xhs_get_note') {
-              try {
-                // 调用你的 /api/xhs-card
-                const baseUrl = req.headers.get('host') || 'xhs-api-opal.vercel.app';
-                const protocol = baseUrl.includes('localhost') ? 'http' : 'https';
-                
-                const cardRes = await fetch(`${protocol}://${baseUrl}/api/xhs-card`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ url: args.url })
-                });
-                
-                const cardData = await cardRes.json();
-                
-                if (!cardData.ok) {
-                  throw new Error(cardData.error || '获取笔记失败');
-                }
-                
-                // 下载图片转 base64
-                let images = [];
-                if (cardData.note.images && cardData.note.images.length > 0) {
-                  const imgRes = await fetch(`${protocol}://${baseUrl}/api/xhs-images`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ urls: cardData.note.images })
-                  });
-                  
-                  const imgData = await imgRes.json();
-                  images = imgData.images.filter(img => img.success).map(img => img.data);
-                }
-                
-                // 返回结果
-                send({
-                  jsonrpc: JSONRPC_VERSION,
-                  id: body.id,
-                  result: {
-                    content: [
-                      {
-                        type: 'text',
-                        text: `# ${cardData.note.title}\n\n**作者**: ${cardData.note.author}\n\n${cardData.note.desc}\n\n**数据**: 👍 ${cardData.note.likedCount} | 💬 ${cardData.note.commentCount} | ⭐ ${cardData.note.collectedCount}`
-                      },
-                      ...images.map(base64 => ({
-                        type: 'image',
-                        data: base64.split(',')[1],
-                        mimeType: base64.match(/data:(.*?);/)[1]
-                      }))
-                    ]
-                  }
-                });
-              } catch (error) {
-                send({
-                  jsonrpc: JSONRPC_VERSION,
-                  id: body.id,
-                  error: {
-                    code: -32603,
-                    message: error.message
-                  }
-                });
-              }
-            } else {
-              send({
-                jsonrpc: JSONRPC_VERSION,
-                id: body.id,
-                error: {
-                  code: -32601,
-                  message: `Unknown tool: ${name}`
-                }
-              });
-            }
-          } else {
-            send({
-              jsonrpc: JSONRPC_VERSION,
-              id: body.id,
-              error: {
-                code: -32601,
-                message: `Unknown method: ${body.method}`
-              }
-            });
-          }
-        }
-        
-        controller.close();
-      } catch (error) {
-        console.error('SSE error:', error);
-        controller.close();
-      }
-    }
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*'
-    }
-  });
+  
+  return new Response('Method not allowed', { status: 405 });
 }
