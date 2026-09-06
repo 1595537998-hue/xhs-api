@@ -22,29 +22,22 @@ export default async function handler(req) {
           jsonrpc: '2.0',
           method: 'endpoint',
           params: {
-            endpoint: `${baseUrl}/api/sse/message`
+            endpoint: `${baseUrl}/api/mcp-message`
           }
         };
         
-        controller.enqueue(
-          encoder.encode(`event: endpoint
-data: ${JSON.stringify(endpointEvent)}
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(endpointEvent)}
 
-`)
-        );
+`));
         
-        // 保持连接打开
+        // 保持连接
         const keepAlive = setInterval(() => {
-          try {
-            controller.enqueue(encoder.encode(': keepalive
+          controller.enqueue(encoder.encode(': keepalive
 
 '));
-          } catch (e) {
-            clearInterval(keepAlive);
-          }
         }, 30000);
         
-        // 当连接关闭时清理
+        // 清理
         req.signal.addEventListener('abort', () => {
           clearInterval(keepAlive);
           controller.close();
@@ -61,40 +54,38 @@ data: ${JSON.stringify(endpointEvent)}
     });
   }
   
-  // 处理客户端消息
-  if (req.method === 'POST' && url.pathname === '/api/sse/message') {
+  // 处理 MCP 消息
+  if (req.method === 'POST' && url.pathname === '/api/mcp-message') {
     const message = await req.json();
     
-    // 处理 initialize 请求
+    // 处理 initialize
     if (message.method === 'initialize') {
-      return new Response(JSON.stringify({
+      return Response.json({
         jsonrpc: '2.0',
         id: message.id,
         result: {
           protocolVersion: '2024-11-05',
-          serverInfo: {
-            name: 'xhs-mcp-server',
-            version: '1.0.0'
-          },
           capabilities: {
             tools: {}
+          },
+          serverInfo: {
+            name: 'xhs-api',
+            version: '1.0.0'
           }
         }
-      }), {
-        headers: { 'Content-Type': 'application/json' }
       });
     }
     
-    // 处理 tools/list 请求
+    // 处理 tools/list
     if (message.method === 'tools/list') {
-      return new Response(JSON.stringify({
+      return Response.json({
         jsonrpc: '2.0',
         id: message.id,
         result: {
           tools: [
             {
               name: 'xhs_get_card',
-              description: '获取小红书笔记卡片信息',
+              description: '获取小红书笔记的详细信息',
               inputSchema: {
                 type: 'object',
                 properties: {
@@ -108,40 +99,39 @@ data: ${JSON.stringify(endpointEvent)}
             },
             {
               name: 'xhs_get_images',
-              description: '获取小红书笔记图片',
+              description: '下载小红书笔记的图片并转为 base64',
               inputSchema: {
                 type: 'object',
                 properties: {
-                  url: {
-                    type: 'string',
-                    description: '小红书笔记链接'
+                  urls: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: '图片 URL 数组'
                   }
                 },
-                required: ['url']
+                required: ['urls']
               }
             }
           ]
         }
-      }), {
-        headers: { 'Content-Type': 'application/json' }
       });
     }
     
-    // 处理 tools/call 请求
+    // 处理 tools/call
     if (message.method === 'tools/call') {
       const { name, arguments: args } = message.params;
       
       try {
         if (name === 'xhs_get_card') {
-          // ✅ 改为 POST 请求，带 JSON body
           const response = await fetch(`${baseUrl}/api/xhs-card`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url: args.url })
           });
+          
           const data = await response.json();
           
-          return new Response(JSON.stringify({
+          return Response.json({
             jsonrpc: '2.0',
             id: message.id,
             result: {
@@ -152,21 +142,19 @@ data: ${JSON.stringify(endpointEvent)}
                 }
               ]
             }
-          }), {
-            headers: { 'Content-Type': 'application/json' }
           });
         }
         
         if (name === 'xhs_get_images') {
-          // ✅ 改为 POST 请求，带 JSON body
           const response = await fetch(`${baseUrl}/api/xhs-images`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ urls: [args.url] })  // 注意这里用 urls 数组，如果你希望只传一个url需要调整，但你的接口原设计是 urls 数组，所以按你的接口格式来
+            body: JSON.stringify({ urls: args.urls })
           });
+          
           const data = await response.json();
           
-          return new Response(JSON.stringify({
+          return Response.json({
             jsonrpc: '2.0',
             id: message.id,
             result: {
@@ -177,48 +165,41 @@ data: ${JSON.stringify(endpointEvent)}
                 }
               ]
             }
-          }), {
-            headers: { 'Content-Type': 'application/json' }
           });
         }
         
-        return new Response(JSON.stringify({
+        // 未知工具
+        return Response.json({
           jsonrpc: '2.0',
           id: message.id,
           error: {
             code: -32601,
-            message: 'Tool not found'
+            message: `Unknown tool: ${name}`
           }
-        }), {
-          headers: { 'Content-Type': 'application/json' }
         });
         
       } catch (error) {
-        return new Response(JSON.stringify({
+        return Response.json({
           jsonrpc: '2.0',
           id: message.id,
           error: {
             code: -32603,
             message: error.message
           }
-        }), {
-          headers: { 'Content-Type': 'application/json' }
         });
       }
     }
     
     // 未知方法
-    return new Response(JSON.stringify({
+    return Response.json({
       jsonrpc: '2.0',
       id: message.id,
       error: {
         code: -32601,
-        message: 'Method not found'
+        message: `Unknown method: ${message.method}`
       }
-    }), {
-      headers: { 'Content-Type': 'application/json' }
     });
   }
   
-  return new Response('Method not allowed', { status: 405 });
+  return new Response('Not Found', { status: 404 });
 }
