@@ -1,91 +1,67 @@
 // MCP over SSE Server for Vercel
-// 部署到 api/sse.js
+// 部署到 api/sse.js —— Node.js Runtime 版本
 
-export const config = {
-  runtime: 'edge',
-};
-
-export default async function handler(req) {
-  const url = new URL(req.url);
-  
-  // 获取当前域名
-  const baseUrl = `https://${req.headers.get('host')}`;
+export default async function handler(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
 
   // 处理 SSE 连接
   if (req.method === 'GET' && url.pathname === '/api/sse') {
-    const encoder = new TextEncoder();
-    
-    const stream = new ReadableStream({
-      async start(controller) {
-        // 发送 endpoint 事件
-        const endpointEvent = {
-          jsonrpc: '2.0',
-          method: 'endpoint',
-          params: {
-            endpoint: `${baseUrl}/api/mcp-message`
-          }
-        };
-        
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(endpointEvent)}
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
-`));
-
-        // 保持连接（每30秒发送一次）
-        const keepalive = setInterval(() => {
-          try {
-            controller.enqueue(encoder.encode(`: keepalive
-
-`));
-          } catch (e) {
-            clearInterval(keepalive);
-          }
-        }, 30000);
-
-        // 连接关闭时清理
-        req.signal.addEventListener('abort', () => {
-          clearInterval(keepalive);
-          controller.close();
-        });
+    // 发送 endpoint 事件
+    const endpointEvent = {
+      jsonrpc: '2.0',
+      method: 'endpoint',
+      params: {
+        endpoint: `https://${req.headers.host}/api/mcp-message`
       }
+    };
+
+    res.write(`data: ${JSON.stringify(endpointEvent)}\n\n`);
+
+    // 保持连接
+    const keepAlive = setInterval(() => {
+      res.write(`: keepalive\n\n`);
+    }, 30000);
+
+    // 客户端断开连接时清理
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      res.end();
     });
 
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
+    return;
   }
 
-  // 处理客户端消息（通过单独的 POST 请求）
+  // 处理 MCP 消息
   if (req.method === 'POST' && url.pathname === '/api/mcp-message') {
     try {
-      const request = await req.json();
-      
-      // 初始化响应
-      if (request.method === 'initialize') {
-        return Response.json({
+      const message = req.body;
+
+      // 处理 initialize
+      if (message.method === 'initialize') {
+        return res.status(200).json({
           jsonrpc: '2.0',
-          id: request.id,
+          id: message.id,
           result: {
             protocolVersion: '2024-11-05',
-            capabilities: {
-              tools: {}
-            },
+            capabilities: { tools: {} },
             serverInfo: {
-              name: 'xhs-api-server',
+              name: 'xhs-api',
               version: '1.0.0'
             }
           }
         });
       }
 
-      // 列出工具
-      if (request.method === 'tools/list') {
-        return Response.json({
+      // 处理 tools/list
+      if (message.method === 'tools/list') {
+        return res.status(200).json({
           jsonrpc: '2.0',
-          id: request.id,
+          id: message.id,
           result: {
             tools: [
               {
@@ -94,10 +70,7 @@ export default async function handler(req) {
                 inputSchema: {
                   type: 'object',
                   properties: {
-                    url: {
-                      type: 'string',
-                      description: '小红书笔记链接'
-                    }
+                    url: { type: 'string', description: '小红书笔记链接' }
                   },
                   required: ['url']
                 }
@@ -110,9 +83,7 @@ export default async function handler(req) {
                   properties: {
                     urls: {
                       type: 'array',
-                      items: {
-                        type: 'string'
-                      },
+                      items: { type: 'string' },
                       description: '图片 URL 数组'
                     }
                   },
@@ -124,88 +95,94 @@ export default async function handler(req) {
         });
       }
 
-      // 调用工具
-      if (request.method === 'tools/call') {
-        const { name, arguments: args } = request.params;
+      // 处理 tools/call
+      if (message.method === 'tools/call') {
+        const { name, arguments: args } = message.params;
+        const baseUrl = `https://${req.headers.host}`;
 
-        if (name === 'xhs_get_card') {
-          const response = await fetch(`${baseUrl}/api/xhs-card`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: args.url })
-          });
-          
-          const data = await response.json();
-          
-          return Response.json({
-            jsonrpc: '2.0',
-            id: request.id,
-            result: {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify(data, null, 2)
-                }
-              ]
-            }
-          });
-        }
+        try {
+          if (name === 'xhs_get_card') {
+            const response = await fetch(`${baseUrl}/api/xhs-card`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: args.url })
+            });
+            const data = await response.json();
 
-        if (name === 'xhs_get_images') {
-          const response = await fetch(`${baseUrl}/api/xhs-images`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ urls: args.urls })
-          });
-          
-          const data = await response.json();
-          
-          return Response.json({
-            jsonrpc: '2.0',
-            id: request.id,
-            result: {
-              content: [
-                {
-                  type: 'text',
-                  text: JSON.stringify(data, null, 2)
-                }
-              ]
-            }
-          });
-        }
-
-        // 未知工具
-        return Response.json({
-          jsonrpc: '2.0',
-          id: request.id,
-          error: {
-            code: -32601,
-            message: `Unknown tool: ${name}`
+            return res.status(200).json({
+              jsonrpc: '2.0',
+              id: message.id,
+              result: {
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify(data, null, 2)
+                  }
+                ]
+              }
+            });
           }
-        });
+
+          if (name === 'xhs_get_images') {
+            const response = await fetch(`${baseUrl}/api/xhs-images`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ urls: args.urls })
+            });
+            const data = await response.json();
+
+            return res.status(200).json({
+              jsonrpc: '2.0',
+              id: message.id,
+              result: {
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify(data, null, 2)
+                  }
+                ]
+              }
+            });
+          }
+
+          return res.status(400).json({
+            jsonrpc: '2.0',
+            id: message.id,
+            error: {
+              code: -32601,
+              message: `Unknown tool: ${name}`
+            }
+          });
+        } catch (error) {
+          return res.status(500).json({
+            jsonrpc: '2.0',
+            id: message.id,
+            error: {
+              code: -32603,
+              message: error.message
+            }
+          });
+        }
       }
 
-      // 未知方法
-      return Response.json({
+      return res.status(400).json({
         jsonrpc: '2.0',
-        id: request.id,
+        id: message.id,
         error: {
           code: -32601,
-          message: `Unknown method: ${request.method}`
+          message: `Unknown method: ${message.method}`
         }
       });
-
     } catch (error) {
-      return Response.json({
+      return res.status(400).json({
         jsonrpc: '2.0',
-        id: null,
         error: {
-          code: -32603,
-          message: error.message
+          code: -32700,
+          message: `Parse error: ${error.message}`
         }
       });
     }
   }
 
-  return new Response('Not Found', { status: 404 });
+  res.status(404).json({ error: 'Not Found' });
 }
