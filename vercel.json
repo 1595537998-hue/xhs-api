@@ -1,6 +1,10 @@
 {
   "functions": {
-    "api/**/*.js": {
+    "api/xhs-card.js": {
+      "memory": 1024,
+      "maxDuration": 30
+    },
+    "api/xhs-images.js": {
       "memory": 1024,
       "maxDuration": 30
     }
