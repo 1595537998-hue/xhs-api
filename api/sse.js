@@ -10,7 +10,7 @@ export default async function handler(req) {
   
   // 获取当前域名
   const baseUrl = `https://${req.headers.get('host')}`;
-  
+
   // 处理 SSE 连接
   if (req.method === 'GET' && url.pathname === '/api/sse') {
     const encoder = new TextEncoder();
@@ -29,22 +29,26 @@ export default async function handler(req) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(endpointEvent)}
 
 `));
-        
-        // 保持连接
-        const keepAlive = setInterval(() => {
-          controller.enqueue(encoder.encode(': keepalive
 
-'));
+        // 保持连接（每30秒发送一次）
+        const keepalive = setInterval(() => {
+          try {
+            controller.enqueue(encoder.encode(`: keepalive
+
+`));
+          } catch (e) {
+            clearInterval(keepalive);
+          }
         }, 30000);
-        
-        // 清理
+
+        // 连接关闭时清理
         req.signal.addEventListener('abort', () => {
-          clearInterval(keepAlive);
+          clearInterval(keepalive);
           controller.close();
         });
       }
     });
-    
+
     return new Response(stream, {
       headers: {
         'Content-Type': 'text/event-stream',
@@ -53,75 +57,77 @@ export default async function handler(req) {
       },
     });
   }
-  
-  // 处理 MCP 消息
+
+  // 处理客户端消息（通过单独的 POST 请求）
   if (req.method === 'POST' && url.pathname === '/api/mcp-message') {
-    const message = await req.json();
-    
-    // 处理 initialize
-    if (message.method === 'initialize') {
-      return Response.json({
-        jsonrpc: '2.0',
-        id: message.id,
-        result: {
-          protocolVersion: '2024-11-05',
-          capabilities: {
-            tools: {}
-          },
-          serverInfo: {
-            name: 'xhs-api',
-            version: '1.0.0'
-          }
-        }
-      });
-    }
-    
-    // 处理 tools/list
-    if (message.method === 'tools/list') {
-      return Response.json({
-        jsonrpc: '2.0',
-        id: message.id,
-        result: {
-          tools: [
-            {
-              name: 'xhs_get_card',
-              description: '获取小红书笔记的详细信息',
-              inputSchema: {
-                type: 'object',
-                properties: {
-                  url: {
-                    type: 'string',
-                    description: '小红书笔记链接'
-                  }
-                },
-                required: ['url']
-              }
-            },
-            {
-              name: 'xhs_get_images',
-              description: '下载小红书笔记的图片并转为 base64',
-              inputSchema: {
-                type: 'object',
-                properties: {
-                  urls: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    description: '图片 URL 数组'
-                  }
-                },
-                required: ['urls']
-              }
-            }
-          ]
-        }
-      });
-    }
-    
-    // 处理 tools/call
-    if (message.method === 'tools/call') {
-      const { name, arguments: args } = message.params;
+    try {
+      const request = await req.json();
       
-      try {
+      // 初始化响应
+      if (request.method === 'initialize') {
+        return Response.json({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            protocolVersion: '2024-11-05',
+            capabilities: {
+              tools: {}
+            },
+            serverInfo: {
+              name: 'xhs-api-server',
+              version: '1.0.0'
+            }
+          }
+        });
+      }
+
+      // 列出工具
+      if (request.method === 'tools/list') {
+        return Response.json({
+          jsonrpc: '2.0',
+          id: request.id,
+          result: {
+            tools: [
+              {
+                name: 'xhs_get_card',
+                description: '获取小红书笔记的详细信息',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    url: {
+                      type: 'string',
+                      description: '小红书笔记链接'
+                    }
+                  },
+                  required: ['url']
+                }
+              },
+              {
+                name: 'xhs_get_images',
+                description: '下载小红书笔记的图片并转为 base64',
+                inputSchema: {
+                  type: 'object',
+                  properties: {
+                    urls: {
+                      type: 'array',
+                      items: {
+                        type: 'string'
+                      },
+                      description: '图片 URL 数组'
+                    }
+                  },
+                  required: ['urls']
+                }
+              }
+            ]
+          }
+        });
+      }
+
+      // 调用工具
+      if (request.method === 'tools/call') {
+        const { name, arguments: args } = request.params;
+
         if (name === 'xhs_get_card') {
           const response = await fetch(`${baseUrl}/api/xhs-card`, {
             method: 'POST',
@@ -133,7 +139,7 @@ export default async function handler(req) {
           
           return Response.json({
             jsonrpc: '2.0',
-            id: message.id,
+            id: request.id,
             result: {
               content: [
                 {
@@ -144,7 +150,7 @@ export default async function handler(req) {
             }
           });
         }
-        
+
         if (name === 'xhs_get_images') {
           const response = await fetch(`${baseUrl}/api/xhs-images`, {
             method: 'POST',
@@ -156,7 +162,7 @@ export default async function handler(req) {
           
           return Response.json({
             jsonrpc: '2.0',
-            id: message.id,
+            id: request.id,
             result: {
               content: [
                 {
@@ -167,39 +173,39 @@ export default async function handler(req) {
             }
           });
         }
-        
+
         // 未知工具
         return Response.json({
           jsonrpc: '2.0',
-          id: message.id,
+          id: request.id,
           error: {
             code: -32601,
             message: `Unknown tool: ${name}`
           }
         });
-        
-      } catch (error) {
-        return Response.json({
-          jsonrpc: '2.0',
-          id: message.id,
-          error: {
-            code: -32603,
-            message: error.message
-          }
-        });
       }
+
+      // 未知方法
+      return Response.json({
+        jsonrpc: '2.0',
+        id: request.id,
+        error: {
+          code: -32601,
+          message: `Unknown method: ${request.method}`
+        }
+      });
+
+    } catch (error) {
+      return Response.json({
+        jsonrpc: '2.0',
+        id: null,
+        error: {
+          code: -32603,
+          message: error.message
+        }
+      });
     }
-    
-    // 未知方法
-    return Response.json({
-      jsonrpc: '2.0',
-      id: message.id,
-      error: {
-        code: -32601,
-        message: `Unknown method: ${message.method}`
-      }
-    });
   }
-  
+
   return new Response('Not Found', { status: 404 });
 }
