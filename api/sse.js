@@ -16,7 +16,7 @@ export default async function handler(req, res) {
       jsonrpc: '2.0',
       method: 'endpoint',
       params: {
-        endpoint: `https://${req.headers.host}/api/mcp-message`
+        endpoint: `https://${req.headers.host}/api/sse`
       }
     };
 
@@ -37,7 +37,7 @@ export default async function handler(req, res) {
   }
 
   // 处理 MCP 消息
-  if (req.method === 'POST' && url.pathname === '/api/mcp-message') {
+  if (req.method === 'POST' && url.pathname === '/api/sse') {
     try {
       const message = req.body;
 
