@@ -7,6 +7,11 @@
     "api/xhs-images.js": {
       "memory": 1024,
       "maxDuration": 30
+    },
+    "api/sse.js": {
+      "memory": 1024,
+      "maxDuration": 300,
+      "runtime": "nodejs18.x"
     }
   }
 }
